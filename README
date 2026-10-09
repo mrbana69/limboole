@@ -1,43 +1,85 @@
 Overview
 --------
 
-This is a simple boolean calculator.  It reads a boolean formula and checks
-whether it is valid.  In case '-s' is specified satisfiability is checked
-instead of validity (tautology).
+This is a fast boolean formula and QBF calculator. It reads a boolean formula
+and checks whether it is valid (tautology) or satisfiable (with '-s').
+It also supports generating full truth tables ('-t') and structured JSON ('-j'),
+along with a client-side WebAssembly developer playground with 14 languages.
 
-Installing
-----------
+Attribution & Original Credits
+------------------------------
 
-Use pip! You can install the limboole binary by issuing:
+This project is an updated fork of Limboole. The core logic solver and original
+WebAssembly port were developed by:
 
-    pip install limboole
+- Armin Biere, Johannes Kepler University / University of Freiburg (Original Limboole & PicoSAT)
+- Martina Seidl, Johannes Kepler University (QBF support)
+- Florian Lonsing, Vienna University of Technology (DepQBF)
+- Max Heisinger (Web port, CMake, Emscripten compilation: https://github.com/maximaximal/limboole)
 
-The project is online at the project below, hosting versions for all
-major distributions and a source distribution:
+Fork Updates by mrbana69 (https://github.com/mrbana69/limboole):
+- Redesigned developer-tool UI (editor-first, compact workspace, light/dark themes)
+- Multi-language localization (14 web languages: EN, ES, DE, IT, FR, PT, ZH, JA, KO, RU, AR, NL, PL, TR)
+- Truth table generator (-t)
+- Extended operators: XOR (^), boolean constants (true, false, 1, 0), alternative OR (/)
+- Python bindings & package (import limboole)
+- Structured JSON output (-j)
+- Automated CI workflow for Linux, Windows, macOS
 
-    https://pypi.org/project/limboole/
+Installing & Python Usage
+-------------------------
 
-Language
---------
+    pip install .
+
+    import limboole
+
+    # Check validity (tautology)
+    limboole.is_valid("p | !p")       # True
+    limboole.is_valid("p & q")        # False
+
+    # Check satisfiability
+    limboole.is_sat("p & q")          # True
+    limboole.is_sat("p & !p")         # False
+
+    # Truth table generation
+    print(limboole.truth_table("p ^ q"))
+
+CLI Usage & Options
+-------------------
+
+    limboole [ <option> ... ] [ <in-file> ]
+
+    -h, --help     print command line summary and exit
+    --version      print the version and exit
+    -v             increase verbosity
+    -p             pretty print input formula only
+    -d             dump generated CNF only
+    -s             check satisfiability (default: validity)
+    -t, --truth-table print ASCII truth table of the formula
+    -j, --json     output result in JSON format
+    -o <out-file>  set output file (default: stdout)
+    -l <log-file>  set log file (default: stderr)
+    --picosat      use PicoSAT SAT solver back-end
+    --depqbf       use DepQBF QBF solver back-end
+
+Language Syntax
+---------------
 
 The input format has the following syntax in BNF:
 ( [ ... ] means optional,  { ... } means repeated arbitrary many times)
    
-   expr ::= iff
-   iff ::= implies { '<->' implies }
+   expr    ::= iff
+   iff     ::= implies { '<->' implies }
    implies ::= or [ '->' or | '<-' or ]
-   or ::= and { '|' and }
-   and ::= not { '&' not }
-   not ::= basic | '!' not
-   basic ::= var | '(' expr ')'
+   or      ::= xor { ('|' | '/') xor }
+   xor     ::= and { '^' and }
+   and     ::= not { '&' not }
+   not     ::= basic | '!' not | '~' not | '-' not
+   basic   ::= var | const | '(' expr ')'
+   const   ::= 'true' | 'false' | '1' | '0'
 
 and 'var' is a string over letters, digits and the following characters:
   
   - _ . [ ] $ @
 
 The last character of 'var' should be different from '-'.
-
-
-
-Armin Biere, Johannes Kepler University,
-Thu Nov 22 15:47:00 CET 2012

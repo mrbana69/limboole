@@ -22,3 +22,4 @@ repository = "https://github.com/maximaximal/limboole"
 # This package does not link with Python, so we can save some builds.
 [tool.scikit-build]
 wheel.py-api = "py38"
+wheel.packages = ["src/limboole"]

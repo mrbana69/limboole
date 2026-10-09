@@ -44,6 +44,16 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <ctype.h>
 #include <stdarg.h>
 
+#ifdef _WIN32
+static FILE *portable_fopen(const char *path, const char *mode) {
+  if (path && !strcmp(path, "/dev/null")) {
+    return fopen("NUL", mode);
+  }
+  return fopen(path, mode);
+}
+#define fopen portable_fopen
+#endif
+
 /*------------------------------------------------------------------------*/
 #ifdef LIMBOOLE_USE_LINGELING
 #include "lglib.h"
@@ -69,18 +79,21 @@ typedef struct QDPLL QDPLL;
 enum Type
 {
   VAR = 0,
-  LP = 1,
-  RP = 2,
-  NOT = 3,
-  AND = 4,
-  OR = 5,
-  IMPLIES = 6,
-  SEILPMI = 7,
-  IFF = 8,
-  DONE = 9,
-  ERROR = 10,
-  ALL = 11,
-  EX = 12
+  CONST_TRUE = 1,
+  CONST_FALSE = 2,
+  LP = 3,
+  RP = 4,
+  NOT = 5,
+  AND = 6,
+  XOR = 7,
+  OR = 8,
+  IMPLIES = 9,
+  SEILPMI = 10,
+  IFF = 11,
+  DONE = 12,
+  ERROR = 13,
+  ALL = 14,
+  EX = 15
 };
 
 /*------------------------------------------------------------------------*/
@@ -156,6 +169,8 @@ struct Mgr
   int check_satisfiability;
   int dump;
   int qdump;
+  int truth_table;
+  int json;
   PicoSAT * picosat;
   LGL * lgl;
   QDPLL *qdpll;
@@ -338,6 +353,31 @@ var (Mgr * mgr, const char *str)
 /*------------------------------------------------------------------------*/
 
 static Node *
+constant (Mgr * mgr, Type type)
+{
+  Node **p, *n;
+
+  if (mgr->nodes_size <= mgr->nodes_count)
+    enlarge_nodes (mgr);
+
+  p = find (mgr, type, 0, 0);
+  n = *p;
+  if (!n)
+    {
+      n = (Node *) malloc (sizeof (*n));
+      memset (n, 0, sizeof (*n));
+      n->type = type;
+
+      *p = n;
+      insert (mgr, n);
+    }
+
+  return n;
+}
+
+/*------------------------------------------------------------------------*/
+
+static Node *
 op (Mgr * mgr, Type type, Node * c0, Node * c1)
 {
   Node **p, *n;
@@ -500,6 +540,15 @@ print_token (Mgr * mgr)
       break;
     case SEILPMI:
       fputs ("<-", mgr->log);
+      break;
+    case CONST_TRUE:
+      fputs ("true", mgr->log);
+      break;
+    case CONST_FALSE:
+      fputs ("false", mgr->log);
+      break;
+    case XOR:
+      fputc ('^', mgr->log);
       break;
     case IFF:
       fputs ("<->", mgr->log);
@@ -688,6 +737,10 @@ RESTART_NEXT_TOKEN:
     {
       mgr->token = OR;
     }
+  else if (ch == '^')
+    {
+      mgr->token = XOR;
+    }
   else if (ch == '!' || ch == '~')
     {
       mgr->token = NOT;
@@ -718,6 +771,10 @@ RESTART_NEXT_TOKEN:
 
       if (mgr->buffer[mgr->buffer_count - 1] == '-')
 	parse_error (mgr, "variable '%s' ends with '-'", mgr->buffer);
+      else if (!strcmp (mgr->buffer, "true") || !strcmp (mgr->buffer, "TRUE") || !strcmp (mgr->buffer, "1"))
+	mgr->token = CONST_TRUE;
+      else if (!strcmp (mgr->buffer, "false") || !strcmp (mgr->buffer, "FALSE") || !strcmp (mgr->buffer, "0"))
+	mgr->token = CONST_FALSE;
       else
 	mgr->token = VAR;
     }
@@ -750,6 +807,11 @@ parse_basic (Mgr * mgr)
 	}
       else
 	res = child;
+      next_token (mgr);
+    }
+  else if (mgr->token == CONST_TRUE || mgr->token == CONST_FALSE)
+    {
+      res = constant (mgr, mgr->token);
       next_token (mgr);
     }
   else if (mgr->token == VAR)
@@ -827,9 +889,17 @@ parse_and (Mgr * mgr)
 /*------------------------------------------------------------------------*/
 
 static Node *
+parse_xor (Mgr * mgr)
+{
+  return parse_associative_op (mgr, XOR, parse_and);
+}
+
+/*------------------------------------------------------------------------*/
+
+static Node *
 parse_or (Mgr * mgr)
 {
-  return parse_associative_op (mgr, OR, parse_and);
+  return parse_associative_op (mgr, OR, parse_xor);
 }
 
 /*------------------------------------------------------------------------*/
@@ -1057,6 +1127,7 @@ tseitin (Mgr * mgr)
 
     switch (p->type) {
     case IFF:
+    case XOR:
       num_clauses += 4;
       break;
     case OR:
@@ -1067,6 +1138,10 @@ tseitin (Mgr * mgr)
       break;
     case NOT:
       num_clauses += 2;
+      break;
+    case CONST_TRUE:
+    case CONST_FALSE:
+      num_clauses += 1;
       break;
     default:
       assert (p->type == VAR);
@@ -1095,6 +1170,26 @@ tseitin (Mgr * mgr)
 			  p->data.as_child[1]->idx);
 	  ternary_clause (mgr, -p->idx, p->data.as_child[0]->idx,
 			  -p->data.as_child[1]->idx);
+	  break;
+	case XOR:
+	  ternary_clause (mgr, -p->idx,
+			  p->data.as_child[0]->idx,
+			  p->data.as_child[1]->idx);
+	  ternary_clause (mgr, -p->idx,
+			  -p->data.as_child[0]->idx,
+			  -p->data.as_child[1]->idx);
+	  ternary_clause (mgr, p->idx,
+			  -p->data.as_child[0]->idx,
+			  p->data.as_child[1]->idx);
+	  ternary_clause (mgr, p->idx,
+			  p->data.as_child[0]->idx,
+			  -p->data.as_child[1]->idx);
+	  break;
+	case CONST_TRUE:
+	  unit_clause (mgr, p->idx);
+	  break;
+	case CONST_FALSE:
+	  unit_clause (mgr, -p->idx);
 	  break;
 	case IMPLIES:
 	  binary_clause (mgr, p->idx, p->data.as_child[0]->idx);
@@ -1167,8 +1262,16 @@ pp_aux (Mgr * mgr, Node * node, Type outer)
 	fputc (')', mgr->out);
       break;
 
+    case CONST_TRUE:
+      fputs ("true", mgr->out);
+      break;
+    case CONST_FALSE:
+      fputs ("false", mgr->out);
+      break;
+
     case OR:
     case AND:
+    case XOR:
     case IFF:
       if (lt)
 	fputc ('(', mgr->out);
@@ -1177,6 +1280,8 @@ pp_aux (Mgr * mgr, Node * node, Type outer)
 	fputs (" | ", mgr->out);
       else if (node->type == AND)
 	fputs (" & ", mgr->out);
+      else if (node->type == XOR)
+	fputs (" ^ ", mgr->out);
       else
 	fputs (" <-> ", mgr->out);
       pp_aux (mgr, node->data.as_child[1], node->type);
@@ -1312,6 +1417,250 @@ print_assignment (Mgr * mgr)
 }
 
 /*------------------------------------------------------------------------*/
+
+static void
+print_assignment_json (Mgr * mgr)
+{
+  int idx, val;
+  Node * n;
+  int first = 1;
+  for (idx = 1; idx <= mgr->idx; idx++)
+    {
+      val = 0;
+#ifdef LIMBOOLE_USE_PICOSAT
+      if (mgr->picosat)
+        val = picosat_deref (mgr->picosat, idx);
+#endif
+#ifdef LIMBOOLE_USE_LINGELING
+      if (mgr->lgl)
+        val = lglderef (mgr->lgl, idx);
+#endif
+#ifdef LIMBOOLE_USE_DEPQBF
+      if (mgr->qdpll) {
+        if (qdpll_get_nesting_of_var(mgr->qdpll, idx) == mgr->outer) {
+          val = qdpll_get_value(mgr->qdpll, idx);
+        } else {
+          val = 0;
+        }
+      }
+#endif
+      n = mgr->idx2node[idx];
+      if ((n->type == VAR) && (!mgr->qdpll || (mgr->qdpll && val != 0)))
+        {
+          if (!first)
+            fprintf (mgr->out, ",\n");
+          fprintf (mgr->out, "    \"%s\": %d", n->data.as_name, val > 0);
+          first = 0;
+        }
+    }
+  fprintf (mgr->out, "\n");
+}
+
+/*------------------------------------------------------------------------*/
+
+static int
+evaluate_ast (Node *node, const int *var_vals)
+{
+  int left, right;
+  if (!node)
+    return 0;
+
+  switch (node->type)
+    {
+    case CONST_TRUE:
+      return 1;
+    case CONST_FALSE:
+      return 0;
+    case VAR:
+      return var_vals ? var_vals[node->idx] : 0;
+    case NOT:
+      return !evaluate_ast (node->data.as_child[0], var_vals);
+    case AND:
+      return evaluate_ast (node->data.as_child[0], var_vals) &&
+             evaluate_ast (node->data.as_child[1], var_vals);
+    case OR:
+      return evaluate_ast (node->data.as_child[0], var_vals) ||
+             evaluate_ast (node->data.as_child[1], var_vals);
+    case XOR:
+      return evaluate_ast (node->data.as_child[0], var_vals) ^
+             evaluate_ast (node->data.as_child[1], var_vals);
+    case IMPLIES:
+      left = evaluate_ast (node->data.as_child[0], var_vals);
+      right = evaluate_ast (node->data.as_child[1], var_vals);
+      return !left || right;
+    case SEILPMI:
+      left = evaluate_ast (node->data.as_child[0], var_vals);
+      right = evaluate_ast (node->data.as_child[1], var_vals);
+      return left || !right;
+    case IFF:
+      return evaluate_ast (node->data.as_child[0], var_vals) ==
+             evaluate_ast (node->data.as_child[1], var_vals);
+    default:
+      return 0;
+    }
+}
+
+/*------------------------------------------------------------------------*/
+
+static int
+cmp_var_nodes (const void *a, const void *b)
+{
+  Node *na = *(Node **) a;
+  Node *nb = *(Node **) b;
+  return strcmp (na->data.as_name, nb->data.as_name);
+}
+
+/*------------------------------------------------------------------------*/
+
+static void
+generate_truth_table (Mgr * mgr)
+{
+  Node *p;
+  Node **vars = NULL;
+  unsigned num_vars = 0;
+  unsigned i;
+  int *var_vals = NULL;
+  unsigned long long total_rows;
+  unsigned long long row;
+  unsigned long long models = 0;
+  int *col_widths = NULL;
+
+  if (mgr->first_prefix != NULL)
+    {
+      fprintf (mgr->log, "*** truth table is not supported for quantified formulas (QBF)\n");
+      return;
+    }
+
+  for (p = mgr->first; p; p = p->next_inserted)
+    {
+      if (!p->idx)
+        p->idx = ++mgr->idx;
+      if (p->type == VAR)
+        num_vars++;
+    }
+
+  if (num_vars > 16)
+    {
+      fprintf (mgr->out,
+               "%% Truth table omitted: formula has %u variables (2^%u = %llu rows).\n"
+               "%% Truth table generation is supported for up to 16 variables.\n",
+               num_vars, num_vars, 1ULL << num_vars);
+      return;
+    }
+
+  if (num_vars > 0)
+    {
+      vars = (Node **) malloc (num_vars * sizeof (Node *));
+      col_widths = (int *) malloc (num_vars * sizeof (int));
+      i = 0;
+      for (p = mgr->first; p; p = p->next_inserted)
+        {
+          if (p->type == VAR)
+            vars[i++] = p;
+        }
+      qsort (vars, num_vars, sizeof (Node *), cmp_var_nodes);
+
+      for (i = 0; i < num_vars; i++)
+        {
+          int len = (int) strlen (vars[i]->data.as_name);
+          col_widths[i] = len < 3 ? 3 : len;
+        }
+    }
+
+  var_vals = (int *) calloc (mgr->idx + 1, sizeof (int));
+  total_rows = num_vars == 0 ? 1 : (1ULL << num_vars);
+
+  if (mgr->json)
+    {
+      fprintf (mgr->out, "{\n  \"type\": \"truth_table\",\n  \"variables\": [");
+      for (i = 0; i < num_vars; i++)
+        {
+          fprintf (mgr->out, "\"%s\"%s", vars[i]->data.as_name,
+                   i + 1 < num_vars ? ", " : "");
+        }
+      fprintf (mgr->out, "],\n  \"rows\": [\n");
+    }
+  else
+    {
+      fputs ("|", mgr->out);
+      for (i = 0; i < num_vars; i++)
+        {
+          fprintf (mgr->out, " %-*s |", col_widths[i], vars[i]->data.as_name);
+        }
+      fprintf (mgr->out, " Result |\n|");
+      for (i = 0; i < num_vars; i++)
+        {
+          int w;
+          for (w = 0; w < col_widths[i] + 2; w++)
+            fputc ('-', mgr->out);
+          fputc ('|', mgr->out);
+        }
+      fputs ("--------|\n", mgr->out);
+    }
+
+  for (row = 0; row < total_rows; row++)
+    {
+      for (i = 0; i < num_vars; i++)
+        {
+          int bit = (int) ((row >> (num_vars - 1 - i)) & 1ULL);
+          var_vals[vars[i]->idx] = bit;
+        }
+
+      int res = evaluate_ast (mgr->root, var_vals);
+      if (res)
+        models++;
+
+      if (mgr->json)
+        {
+          fprintf (mgr->out, "    {\"assignment\": {");
+          for (i = 0; i < num_vars; i++)
+            {
+              int bit = var_vals[vars[i]->idx];
+              fprintf (mgr->out, "\"%s\": %d%s", vars[i]->data.as_name, bit,
+                       i + 1 < num_vars ? ", " : "");
+            }
+          fprintf (mgr->out, "}, \"result\": %d}%s\n", res,
+                   row + 1 < total_rows ? "," : "");
+        }
+      else
+        {
+          fputs ("|", mgr->out);
+          for (i = 0; i < num_vars; i++)
+            {
+              int bit = var_vals[vars[i]->idx];
+              fprintf (mgr->out, " %-*d |", col_widths[i], bit);
+            }
+          fprintf (mgr->out, "   %d    |\n", res);
+        }
+    }
+
+  if (mgr->json)
+    {
+      fprintf (mgr->out, "  ],\n  \"models\": %llu,\n  \"total_rows\": %llu,\n",
+               models, total_rows);
+      fprintf (mgr->out, "  \"valid\": %s,\n  \"satisfiable\": %s\n}\n",
+               models == total_rows ? "true" : "false",
+               models > 0 ? "true" : "false");
+    }
+  else
+    {
+      fprintf (mgr->out, "%% Models: %llu / %llu (", models, total_rows);
+      if (models == total_rows)
+        fputs ("Valid, Tautology)\n", mgr->out);
+      else if (models == 0)
+        fputs ("Unsatisfiable, Contradiction)\n", mgr->out);
+      else
+        fputs ("Satisfiable, Contingent)\n", mgr->out);
+    }
+
+  free (var_vals);
+  if (vars)
+    free (vars);
+  if (col_widths)
+    free (col_widths);
+}
+
+/*------------------------------------------------------------------------*/
 #if defined(LIMBOOLE_USE_PICOSAT) && defined(LIMBOOLE_USE_LINGELING) && defined(LIMBOOLE_USE_DEPQBF)
 #define PICOSAT_USAGE \
 "  --picosat      use PicoSAT as SAT solver back-end (disabled by default)\n"
@@ -1392,6 +1741,8 @@ print_assignment (Mgr * mgr)
 "  -d             dump generated CNF only\n" \
 "  -s             check satisfiability with SAT Solvers \n "\
 "                       (default is to check validity)\n"\
+"  -t, --truth-table print truth table of formula\n" \
+"  -j, --json     output result in JSON format\n" \
 "  -o <out-file>  set output file (default <stdout>)\n" \
 "  -l <log-file>  set log file (default <stderr>)\n" \
 LINGELING_USAGE \
@@ -1430,6 +1781,9 @@ int limboole_extended(int argc, char **argv, int op, char *input,
     use_depqbf = 1;
     mgr->use_depqbf = 1;
   }
+  if(op == 4) {
+    mgr->truth_table = 1;
+  }
   mgr->check_satisfiability = satcheck;
 
   // Allow simultaneous linking of DepQBF and SAT Solver and switch using
@@ -1465,6 +1819,17 @@ int limboole_extended(int argc, char **argv, int op, char *input,
       }
     } else if (!strcmp(argv[i], "-s")) {
       mgr->check_satisfiability = 1;
+    } else if (!strcmp(argv[i], "-t") || !strcmp(argv[i], "--truth-table")) {
+      mgr->truth_table = 1;
+    } else if (!strcmp(argv[i], "-j") || !strcmp(argv[i], "--json")) {
+      mgr->json = 1;
+    } else if (!strcmp(argv[i], "-m")) {
+      if (i == argc - 1) {
+        fprintf(mgr->log, "*** argument to '-m' missing (try '-h')\n");
+        error = 1;
+      } else {
+        i++;
+      }
     } else if (!strcmp(argv[i], "-o")) {
       if (i == argc - 1) {
         fprintf(mgr->log, "*** argument to '-o' missing (try '-h')\n");
@@ -1551,7 +1916,10 @@ int limboole_extended(int argc, char **argv, int op, char *input,
     error = !parse(mgr);
 
     if (!error) {
-      if (pretty_print || mgr->qdump)
+      if (mgr->truth_table) {
+        generate_truth_table (mgr);
+      }
+      else if (pretty_print || mgr->qdump)
       {
         if (pretty_print)
           pp(mgr);
@@ -1581,29 +1949,55 @@ int limboole_extended(int argc, char **argv, int op, char *input,
 #endif
 
           if (res == 10) {
-            if(mgr->qdpll) {
-              fprintf (mgr->out, "%% TRUE FORMULA (satisfying assignment of outermost existential variables follows)\n");
+            if (mgr->json) {
+              if (mgr->qdpll) {
+                fprintf (mgr->out, "{\n  \"status\": \"TRUE\",\n  \"true\": true,\n  \"assignment\": {\n");
+              } else if (mgr->check_satisfiability) {
+                fprintf (mgr->out, "{\n  \"status\": \"SATISFIABLE\",\n  \"satisfiable\": true,\n  \"assignment\": {\n");
+              } else {
+                fprintf (mgr->out, "{\n  \"status\": \"INVALID\",\n  \"valid\": false,\n  \"satisfiable\": true,\n  \"assignment\": {\n");
+              }
+              print_assignment_json (mgr);
+              fprintf (mgr->out, "  }\n}\n");
             } else {
-              if (mgr->check_satisfiability)
-                fprintf(mgr->out, "%% SATISFIABLE formula"
-                                  " (satisfying assignment follows)\n");
-              else
-                fprintf(mgr->out, "%% INVALID formula"
-                                  " (falsifying assignment follows)\n");
-            }
+              if(mgr->qdpll) {
+                fprintf (mgr->out, "%% TRUE FORMULA (satisfying assignment of outermost existential variables follows)\n");
+              } else {
+                if (mgr->check_satisfiability)
+                  fprintf(mgr->out, "%% SATISFIABLE formula"
+                                    " (satisfying assignment follows)\n");
+                else
+                  fprintf(mgr->out, "%% INVALID formula"
+                                    " (falsifying assignment follows)\n");
+              }
 
-            print_assignment(mgr);
+              print_assignment(mgr);
+            }
           } else if (res == 20) {
-            if(mgr->qdpll) {
-fprintf (mgr->out, "%% FALSE formula\n");
+            if (mgr->json) {
+              if (mgr->qdpll) {
+                fprintf (mgr->out, "{\n  \"status\": \"FALSE\",\n  \"true\": false,\n  \"assignment\": null\n}\n");
+              } else if (mgr->check_satisfiability) {
+                fprintf (mgr->out, "{\n  \"status\": \"UNSATISFIABLE\",\n  \"satisfiable\": false,\n  \"valid\": false,\n  \"assignment\": null\n}\n");
+              } else {
+                fprintf (mgr->out, "{\n  \"status\": \"VALID\",\n  \"valid\": true,\n  \"satisfiable\": true,\n  \"assignment\": null\n}\n");
+              }
             } else {
-            if (mgr->check_satisfiability)
-              fprintf(mgr->out, "%% UNSATISFIABLE formula\n");
-            else
-              fprintf(mgr->out, "%% VALID formula\n");
+              if(mgr->qdpll) {
+                fprintf (mgr->out, "%% FALSE formula\n");
+              } else {
+                if (mgr->check_satisfiability)
+                  fprintf(mgr->out, "%% UNSATISFIABLE formula\n");
+                else
+                  fprintf(mgr->out, "%% VALID formula\n");
+              }
             }
           } else {
-            fprintf(mgr->out, "%% UNKNOWN result\n");
+            if (mgr->json) {
+              fprintf (mgr->out, "{\n  \"status\": \"UNKNOWN\",\n  \"assignment\": null\n}\n");
+            } else {
+              fprintf(mgr->out, "%% UNKNOWN result\n");
+            }
           }
         }
       }

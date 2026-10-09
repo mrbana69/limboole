@@ -51,8 +51,11 @@ endif()
 # Install all targets
 # =============================================
 
-if(SKBUILD)
+if(SKBUILD OR WIN32)
   target_compile_definitions(picosat PUBLIC NGETRUSAGE)
+endif()
+
+if(SKBUILD)
   install(TARGETS limboole DESTINATION "${SKBUILD_SCRIPTS_DIR}")
   install(TARGETS dimacs2boole DESTINATION "${SKBUILD_SCRIPTS_DIR}")
 else()
@@ -81,3 +84,14 @@ endif()
 # =============================================
   
 include(CTest)
+
+if(BUILD_TESTING)
+  add_executable(testlimboole
+    ${CMAKE_CURRENT_SOURCE_DIR}/test.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/limboole.c
+  )
+  target_compile_definitions(testlimboole PRIVATE LIMBOOLE_USE_PICOSAT LIMBOOLE_USE_DEPQBF)
+  target_link_libraries(testlimboole picosat qdpll)
+  add_test(NAME testlimboole COMMAND testlimboole)
+  set_tests_properties(testlimboole PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+endif()

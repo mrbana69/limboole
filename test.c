@@ -3,7 +3,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#ifdef _WIN32
+#include <io.h>
+#define isatty _isatty
+#else
 #include <unistd.h>
+#endif
 
 /*------------------------------------------------------------------------*/
 
@@ -130,7 +135,7 @@ main (int argc, char **argv)
   run_all (&ts);
   printf ("%u ok, %u failed (out of %u)\n", ts.ok, ts.failed, ts.count);
 
-  return 0;
+  return ts.failed != 0;
 }
 
 /*------------------------------------------------------------------------*/
@@ -318,11 +323,16 @@ run_all (TestSuite * ts)
   run (ts, 0, 2, "valid0", "log/valid0.in");
   run (ts, 0, 2, "valid1", "log/valid1.in");
   run (ts, 0, 2, "valid2", "log/valid2.in");
-  run (ts, 1, 4, "valid3", "-m", "0", "log/valid3.in");
+  run (ts, 0, 4, "valid3", "-m", "0", "log/valid3.in");
   run (ts, 0, 2, "valid4", "log/valid4.in");
   run (ts, 0, 2, "valid5", "log/valid5.in");
   run (ts, 0, 3, "sat2", "-s", "log/sat2.in");
   run (ts, 0, 3, "prime9", "-s", "log/prime9.in");
   run (ts, 0, 2, "count2live", "log/count2live.in");
   run (ts, 0, 2, "count2stall", "log/count2stall.in");
+  run (ts, 0, 3, "xor0", "-s", "log/xor0.in");
+  run (ts, 0, 2, "xor1", "log/xor1.in");
+  run (ts, 0, 2, "const0", "log/const0.in");
+  run (ts, 0, 3, "tt0", "-t", "log/tt0.in");
+  run (ts, 0, 4, "json0", "-s", "-j", "log/json0.in");
 }
